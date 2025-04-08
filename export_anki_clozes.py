@@ -10,14 +10,25 @@ from bs4 import BeautifulSoup  # Toujours utile pour extraire la 1ère ligne
 output_dir = os.path.expanduser("~/Downloads/Documents perso/Obsidian")
 index_note_path = os.path.join(output_dir, "Anki.md")
 
-anki_field_name = "Texte"      # Nom du champ Anki contenant le HTML principal
+anki_field_name = "Texte"      # Nom du champ Anki contenant le HTML principal (pour les cartes 'texte à trou')
 title_max_length = 95          # Longueur max pour le titre extrait
 
-# Mettre ici l'ID d'une note à tester, ou None pour tout exporter (jusqu'à max_notes)
+# Pour cibler le deck dont le titre contient "Fiches"
+deck_query = "deck:*Fiches*"
+
+# Mettre ici l'ID d'une note à tester, ou None pour tout exporter
 note_id_target = None         # Mettre un ID ici pour tester une seule note spécifique
 
 # Ensemble pour stocker les noms des fiches de tag (pour l'index global)
 tag_notes_set = set()
+
+# Définition des types de notes traitées en mode "recto verso"
+recto_verso_types = {
+    "basique (carte inversée optionnelle)",
+    "basique (saisissez la réponse)",
+    "généralités (deux sens)",
+    "basique"
+}
 
 # === Fonctions ===
 
@@ -65,21 +76,21 @@ def extract_title_from_html(html_content, max_len):
         return "Sans titre"
 
 def get_note_ids():
-    """Récupère les IDs des notes depuis AnkiConnect pour tous les paquets dont le nom contient 'Fiches'."""
+    """Récupère les IDs des notes depuis AnkiConnect pour les decks dont le titre contient 'Fiches'."""
     if note_id_target:
         print(f"ℹ️ Ciblage de la note unique ID : {note_id_target}")
         return [note_id_target]
-    print("🔍 Recherche de toutes les notes dont le paquet contient 'Fiches'...")
+    print(f"🔍 Recherche de toutes les notes avec le deck correspondant à '{deck_query}'...")
     payload = {
         "action": "findNotes",
         "version": 6,
-        "params": { "query": "deck:*Fiches*" }
+        "params": { "query": deck_query }
     }
     try:
         r = requests.post("http://localhost:8765", json=payload, timeout=10)
         r.raise_for_status()
         result = r.json().get("result", [])
-        print(f"🧠 {len(result)} IDs de notes trouvés dans les paquets contenant 'Fiches'.")
+        print(f"🧠 {len(result)} IDs de notes trouvés pour la requête '{deck_query}'.")
         return result
     except requests.exceptions.ConnectionError:
         print("❌ Erreur : Impossible de se connecter à AnkiConnect sur http://localhost:8765.")
@@ -127,41 +138,32 @@ def get_notes_details(note_ids):
 def update_tag_file(tag_name, note_link):
     """
     Crée ou met à jour la note de tag (ex : Histoire.md) en y ajoutant le lien vers la note.
-    En plus, cette fonction s'assure que le fichier se termine par le hashtag correspondant (en minuscules),
+    Cette fonction s'assure également que le fichier se termine par le hashtag correspondant (en minuscules),
     par exemple "#histoire" pour le tag "Histoire".
     """
-    # Pour une note sans tag, on utilise "Sans tag"
     tag_clean = tag_name if tag_name else "Sans tag"
     tag_filename = sanitize_filename(tag_clean)
     tag_filepath = os.path.join(output_dir, f"{tag_filename}.md")
-    # Ajout du tag dans l'ensemble global (pour l'index)
     tag_notes_set.add(tag_filename)
 
-    # Définir la ligne de hashtag (en minuscules)
     tag_hashtag = f"#{tag_clean.lower()}"
 
     lines = []
     if os.path.exists(tag_filepath):
         with open(tag_filepath, "r", encoding="utf-8") as f:
             lines = f.read().splitlines()
-        # Retirer d'éventuelles lignes blanches en fin de fichier
         while lines and lines[-1].strip() == "":
             lines.pop()
-        # Si la dernière ligne correspond déjà au hashtag, on la retire temporairement
         if lines and lines[-1].strip() == tag_hashtag:
             lines.pop()
     else:
-        # Création d'un fichier avec un header
         lines = [f"# {tag_clean}", "", "Liste des notes liées:"]
 
-    # Préparer la ligne de lien pour la note (ex: "- [[Matthew Wong]]")
     note_line = f"- [[{note_link}]]"
     if note_line not in lines:
         lines.append(note_line)
 
-    # Ajouter éventuellement une ligne vide avant le hashtag pour séparer les parties
     lines.append("")
-    # Ajouter le hashtag à la fin
     lines.append(tag_hashtag)
 
     new_content = "\n".join(lines) + "\n"
@@ -169,7 +171,17 @@ def update_tag_file(tag_name, note_link):
         f.write(new_content)
 
 def export_notes(notes):
-    """Exporte les notes Anki en fichiers Markdown et met à jour les fiches de tag."""
+    """Exporte les notes Anki en fichiers Markdown et met à jour les fiches de tag.
+       Prend en compte deux types de cartes :
+       - 'texte à trou' : traitement sur le champ défini par anki_field_name.
+       - 'recto verso' : si le type de carte est l'un des suivants :
+            * Basique (carte inversée optionnelle)
+            * Basique (saisissez la réponse)
+            * Généralités (deux sens)
+            * Basique
+         alors le champ 'Recto' est utilisé pour extraire le titre et tous les autres champs (par ex. 'Verso') sont concaténés pour former le corps.
+       Les autres types de cartes sont ignorés.
+    """
     if not notes:
         print("⚠️ Aucune note à exporter.")
         return
@@ -186,35 +198,57 @@ def export_notes(notes):
             print("⚠️ Note ignorée (pas d'ID)")
             continue
 
-        raw_html_original = note.get("fields", {}).get(anki_field_name, {}).get("value", "")
-        if not raw_html_original:
-            print(f"⚠️ Note {note_id} ignorée (champ '{anki_field_name}' vide ou manquant).")
+        model_name = note.get("modelName", "")
+        if not model_name:
+            print(f"⚠️ Note {note_id} ignorée (pas de type de carte).")
             continue
 
-        # 1. Supprimer les occlusions pour le corps ET pour le titre
-        html_body_no_cloze = remove_cloze_keep_html(raw_html_original)
+        model_lower = model_name.lower()
 
-        # 2. Extraire le titre
-        title = extract_title_from_html(html_body_no_cloze, title_max_length)
-
-        # 3. Récupérer les tags Anki
+        # Préparer les tags
         tags_list = note.get("tags", [])
-        # S'il n'y a aucun tag, on utilise None pour signifier "Sans tag"
         if not tags_list:
             tags_list = [None]
-
-        # 4. Contenu final du fichier (HTML + tags en bas)
         tags_md_line = "Tags: " + " ".join(f"#{tag}" for tag in tags_list if tag) if any(tags_list) else ""
-        content_to_write = f"{html_body_no_cloze}\n\n---\n\n{tags_md_line}".strip()
 
-        # 5. Création d'un hash unique pour éviter les doublons
-        content_hash = hashlib.md5((html_body_no_cloze + str(note_id)).encode("utf-8")).hexdigest()
+        # Traitement selon le type de note
+        if "texte à trou" in model_lower:
+            raw_html_original = note.get("fields", {}).get(anki_field_name, {}).get("value", "")
+            if not raw_html_original:
+                print(f"⚠️ Note {note_id} ignorée (champ '{anki_field_name}' vide ou manquant).")
+                continue
+            html_body_no_cloze = remove_cloze_keep_html(raw_html_original)
+            title = extract_title_from_html(html_body_no_cloze, title_max_length)
+            content_to_write = f"{html_body_no_cloze}\n\n---\n\n{tags_md_line}".strip()
+        elif model_lower in recto_verso_types:
+            fields = note.get("fields", {})
+            recto_field = fields.get("Recto", {}).get("value", "")
+            if not recto_field:
+                print(f"⚠️ Note {note_id} ignorée (champ 'Recto' vide ou manquant).")
+                continue
+            title = extract_title_from_html(recto_field, title_max_length)
+            verso_parts = []
+            for key, field in fields.items():
+                if key.lower() == "recto":
+                    continue
+                value = field.get("value", "")
+                if value:
+                    verso_parts.append(value)
+            if not verso_parts:
+                print(f"⚠️ Note {note_id} ignorée (aucun contenu trouvé pour le verso).")
+                continue
+            body_html = "\n\n".join(verso_parts)
+            content_to_write = f"{body_html}\n\n---\n\n{tags_md_line}".strip()
+        else:
+            print(f"ℹ️ Note {note_id} ignorée car son type de carte ({model_name}) n'est pas supporté.")
+            continue
+
+        content_hash = hashlib.md5((content_to_write + str(note_id)).encode("utf-8")).hexdigest()
         if content_hash in seen_hashes:
             print(f"ℹ️ Note {note_id} déjà traitée (hash identique), ignorée.")
             continue
         seen_hashes.add(content_hash)
 
-        # 6. Déterminer le nom de fichier de la note
         base_filename = sanitize_filename(title)
         filename_final = base_filename
         suffix = 1
@@ -229,7 +263,6 @@ def export_notes(notes):
 
         filepath = os.path.join(output_dir, f"{filename_final}.md")
 
-        # 7. Écrire la note exportée
         try:
             with open(filepath, "w", encoding="utf-8") as f:
                 f.write(content_to_write)
@@ -242,14 +275,11 @@ def export_notes(notes):
             print(f"❌ Erreur inattendue lors de l'écriture du fichier {filepath} : {e}")
             continue
 
-        # 8. Mettre à jour les fiches de tag
         for tag in tags_list:
             update_tag_file(tag, filename_final)
 
     print(f"\n✨ Exportation terminée. {exported_count} note(s) écrite(s).")
 
-    # 9. Écrire l'index global listant les fiches de tag
-    # Ajout du lien vers la note "Index"
     if tag_notes_set:
         index_lines = ["# 📘 Index des fiches de tag", "", "- [[Index]]", ""]
         for tag_note in sorted(tag_notes_set):
@@ -277,7 +307,6 @@ def main():
         return
 
     notes_data = get_notes_details(note_ids)
-
     if notes_data is None:
         print("❌ Arrêt du script en raison d'une erreur de récupération des détails des notes.")
         return
