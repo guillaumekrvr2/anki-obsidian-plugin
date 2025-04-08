@@ -4,24 +4,25 @@ import os
 import re
 import html
 import hashlib
-from bs4 import BeautifulSoup # Toujours utile pour extraire la 1ère ligne
+from bs4 import BeautifulSoup  # Toujours utile pour extraire la 1ère ligne
 
 # === Configuration ===
 output_dir = os.path.expanduser("~/Downloads/Documents perso/Obsidian")
 index_note_path = os.path.join(output_dir, "Anki.md")
 
-anki_field_name = "Texte" # Nom du champ Anki contenant le HTML principal
-title_max_length = 95 # Longueur max pour le titre extrait
+anki_field_name = "Texte"      # Nom du champ Anki contenant le HTML principal
+title_max_length = 95          # Longueur max pour le titre extrait
 
 # Mettre ici l'ID d'une note à tester, ou None pour tout exporter (jusqu'à max_notes)
-note_id_target = None # Mettre un ID ici pour tester une seule note spécifique
+note_id_target = None         # Mettre un ID ici pour tester une seule note spécifique
+
+# Ensemble pour stocker les noms des fiches de tag (pour l'index global)
+tag_notes_set = set()
 
 # === Fonctions ===
 
 def remove_cloze_keep_html(text):
     """Supprime les marqueurs d'occlusion Anki {{c...}} en gardant le contenu."""
-    # Utilise une regex non-gourmande (.*?) pour gérer les cas multiples sur une ligne
-    # S'assure de ne pas capturer les "hints" (::hint) comme partie du contenu principal
     return re.sub(r"{{c\d+::(.*?)(::.*?)?}}", r"\1", text, flags=re.DOTALL)
 
 def sanitize_filename(title, max_length=100):
@@ -31,8 +32,8 @@ def sanitize_filename(title, max_length=100):
     title = re.sub(r'[\x00-\x1f\x7f]', '', title)
     title = re.sub(r'\s+', ' ', title).strip()
     if not title or title.strip('.') == '':
-        return "Sans titre" # Retourne "Sans titre" si vide après nettoyage
-    return title[:max_length].strip() # Limite la longueur finale après nettoyage
+        return "Sans titre"
+    return title[:max_length].strip()
 
 def extract_title_from_html(html_content, max_len):
     """
@@ -41,47 +42,33 @@ def extract_title_from_html(html_content, max_len):
     """
     if not html_content:
         return "Sans titre"
-
     try:
         soup = BeautifulSoup(html_content, 'lxml')
-        # Essayer d'extraire le texte en préservant certains sauts de ligne comme séparateurs
         text_content = soup.get_text(separator='\n', strip=True)
-
-        if not text_content: # Si aucun texte n'est trouvé
-             return "Sans titre"
-
-        # Trouver la première ligne non vide
+        if not text_content:
+            return "Sans titre"
         first_line = ""
         for line in text_content.split('\n'):
             stripped_line = line.strip()
-            if stripped_line: # Si la ligne n'est pas vide après suppression des espaces
+            if stripped_line:
                 first_line = stripped_line
-                break # On a trouvé la première ligne significative
-
-        if not first_line: # Si toujours vide après la boucle
+                break
+        if not first_line:
             return "Sans titre"
-
-        # Nettoyer les entités HTML résiduelles
         first_line = html.unescape(first_line)
-
-        # Tronquer si nécessaire
         if len(first_line) > max_len:
             return first_line[:max_len] + "..."
         else:
             return first_line
-
     except Exception as e:
-        # En cas d'erreur de parsing ou autre, retourner un titre par défaut
         print(f"⚠️ Erreur lors de l'extraction du titre : {e}. Utilisation de 'Sans titre'.")
         return "Sans titre"
-
 
 def get_note_ids():
     """Récupère les IDs des notes depuis AnkiConnect pour tous les paquets dont le nom contient 'Fiches'."""
     if note_id_target:
         print(f"ℹ️ Ciblage de la note unique ID : {note_id_target}")
         return [note_id_target]
-
     print("🔍 Recherche de toutes les notes dont le paquet contient 'Fiches'...")
     payload = {
         "action": "findNotes",
@@ -134,19 +121,49 @@ def get_notes_details(note_ids):
         print(f"❌ Erreur de requête AnkiConnect (notesInfo) : {e}")
         return None
     except Exception as e:
-        print(f"❌ Erreur inattendue lors de la récupération des détails : {e}")
+        print(f"❌ Erreur inattendue lors de la récupération des détails des notes : {e}")
         return None
 
+def update_tag_file(tag_name, note_link):
+    """
+    Crée ou met à jour la note de tag (ex : Histoire.md) en y ajoutant le lien vers la note.
+    Si la note existe déjà, le lien n'est pas dupliqué.
+    """
+    # On utilise "Sans tag" pour les notes sans tag
+    tag_clean = tag_name if tag_name else "Sans tag"
+    tag_filename = sanitize_filename(tag_clean)
+    tag_filepath = os.path.join(output_dir, f"{tag_filename}.md")
+
+    # Ajout du tag dans l'ensemble global (pour l'index)
+    tag_notes_set.add(tag_filename)
+
+    # Lecture du contenu existant
+    existing_content = ""
+    if os.path.exists(tag_filepath):
+        with open(tag_filepath, "r", encoding="utf-8") as f:
+            existing_content = f.read()
+
+    # Prépare le lien (ex: - [[Matthew Wong]])
+    new_link_line = f"- [[{note_link}]]\n"
+    if new_link_line.strip() in existing_content:
+        return  # Le lien existe déjà
+
+    if not existing_content:
+        # Création du fichier avec un header
+        new_content = f"# {tag_clean}\n\nListe des notes liées:\n{new_link_line}"
+    else:
+        new_content = existing_content.rstrip() + "\n" + new_link_line
+
+    with open(tag_filepath, "w", encoding="utf-8") as f:
+        f.write(new_content)
 
 def export_notes(notes):
-    """Exporte les notes Anki fournies en fichiers Markdown (corps en HTML brut)."""
+    """Exporte les notes Anki en fichiers Markdown et met à jour les fiches de tag."""
     if not notes:
         print("⚠️ Aucune note à exporter.")
         return
 
     os.makedirs(output_dir, exist_ok=True)
-    backlinks = []
-    seen_filenames = set()
     seen_hashes = set()
     exported_count = 0
 
@@ -155,7 +172,7 @@ def export_notes(notes):
     for note in notes:
         note_id = note.get("noteId")
         if not note_id:
-            print(f"⚠️ Note ignorée (pas d'ID)")
+            print("⚠️ Note ignorée (pas d'ID)")
             continue
 
         raw_html_original = note.get("fields", {}).get(anki_field_name, {}).get("value", "")
@@ -163,72 +180,77 @@ def export_notes(notes):
             print(f"⚠️ Note {note_id} ignorée (champ '{anki_field_name}' vide ou manquant).")
             continue
 
-        # 1. Supprimer les occlusions pour le corps ET pour l'extraction du titre
+        # 1. Supprimer les occlusions pour le corps ET pour le titre
         html_body_no_cloze = remove_cloze_keep_html(raw_html_original)
 
-        # 2. Extraire le titre à partir du HTML nettoyé des occlusions
+        # 2. Extraire le titre
         title = extract_title_from_html(html_body_no_cloze, title_max_length)
 
         # 3. Récupérer les tags Anki
         tags_list = note.get("tags", [])
-        tags_md_line = "Tags: " + " ".join(f"#{tag}" for tag in tags_list if tag) if tags_list else ""
+        # S'il n'y a aucun tag, on utilise None pour signifier "Sans tag"
+        if not tags_list:
+            tags_list = [None]
 
-        # 4. Le contenu du fichier est le HTML (sans occlusions) + la ligne de tags
-        #    On ajoute une séparation claire pour ne pas mélanger HTML et tags Markdown
+        # 4. Contenu final du fichier (HTML + tags en bas)
+        tags_md_line = "Tags: " + " ".join(f"#{tag}" for tag in tags_list if tag) if any(tags_list) else ""
         content_to_write = f"{html_body_no_cloze}\n\n---\n\n{tags_md_line}".strip()
 
-        # 5. Hash unique basé sur le contenu HTML + ID
-        #    Utiliser html_body_no_cloze car c'est ce qui sera écrit (hors tags)
+        # 5. Création d'un hash unique pour éviter les doublons
         content_hash = hashlib.md5((html_body_no_cloze + str(note_id)).encode("utf-8")).hexdigest()
         if content_hash in seen_hashes:
             print(f"ℹ️ Note {note_id} déjà traitée (hash identique), ignorée.")
             continue
         seen_hashes.add(content_hash)
 
-        # 6. Gestion du nom de fichier (basé sur le titre extrait et tronqué)
-        base_filename = sanitize_filename(title) # title est déjà tronqué si besoin
+        # 6. Déterminer le nom de fichier de la note
+        base_filename = sanitize_filename(title)
         filename_final = base_filename
         suffix = 1
-        # Utilise os.path.exists pour vérifier les fichiers réels, pas juste les noms vus
         while os.path.exists(os.path.join(output_dir, f"{filename_final}.md")):
-            # Gérer spécifiquement "Sans titre" pour éviter "Sans titre_1_1" etc.
             if base_filename.startswith("Sans titre"):
-                 # Si on a déjà un compteur (ex: "Sans titre 2"), on l'incrémente
-                 match = re.match(r"^(Sans titre)(?: (\d+))?$", base_filename)
-                 current_num = int(match.group(2) or 0) if match else 0
-                 filename_final = f"Sans titre {current_num + suffix}"
+                match = re.match(r"^(Sans titre)(?: (\d+))?$", base_filename)
+                current_num = int(match.group(2) or 0) if match else 0
+                filename_final = f"Sans titre {current_num + suffix}"
             else:
-                 filename_final = f"{base_filename}_{suffix}"
+                filename_final = f"{base_filename}_{suffix}"
             suffix += 1
 
         filepath = os.path.join(output_dir, f"{filename_final}.md")
 
-        # 7. Écrire le fichier
+        # 7. Écrire la note exportée
         try:
             with open(filepath, "w", encoding="utf-8") as f:
                 f.write(content_to_write)
             print(f"✅ Note {note_id} exportée : {filepath}")
-            backlinks.append(f"- [[{filename_final}]]") # Lien Obsidian utilise le nom de fichier sans .md
             exported_count += 1
         except OSError as e:
             print(f"❌ Erreur lors de l'écriture du fichier {filepath} : {e}")
+            continue
         except Exception as e:
-             print(f"❌ Erreur inattendue lors de l'écriture du fichier {filepath} : {e}")
+            print(f"❌ Erreur inattendue lors de l'écriture du fichier {filepath} : {e}")
+            continue
 
+        # 8. Mettre à jour les fiches de tag
+        for tag in tags_list:
+            update_tag_file(tag, filename_final)
 
     print(f"\n✨ Exportation terminée. {exported_count} note(s) écrite(s).")
 
-    # Écrire le fichier d'index
-    if backlinks:
+    # 9. Écrire l'index global listant les fiches de tag
+    # Ajout du lien vers la note "Index"
+    if tag_notes_set:
+        index_lines = ["# 📘 Index des fiches de tag", "", "- [[Index]]", ""]
+        for tag_note in sorted(tag_notes_set):
+            index_lines.append(f"- [[{tag_note}]]")
         try:
             with open(index_note_path, "w", encoding="utf-8") as f:
-                f.write("# 📘 Anki Index\n\n")
-                f.write("\n".join(sorted(backlinks)))
+                f.write("\n".join(index_lines))
             print(f"📎 Fichier d'index créé/mis à jour : {index_note_path}")
         except OSError as e:
             print(f"❌ Erreur lors de l'écriture du fichier d'index {index_note_path} : {e}")
     else:
-        print("ℹ️ Aucun backlink à ajouter au fichier d'index.")
+        print("ℹ️ Aucune fiche de tag à indexer.")
 
 def main():
     """Fonction principale du script."""
@@ -236,8 +258,8 @@ def main():
     note_ids = get_note_ids()
 
     if note_ids is None:
-         print("❌ Arrêt du script en raison d'une erreur de récupération des IDs.")
-         return
+        print("❌ Arrêt du script en raison d'une erreur de récupération des IDs.")
+        return
 
     if not note_ids:
         print("ℹ️ Aucune note trouvée ou sélectionnée. Fin du script.")
