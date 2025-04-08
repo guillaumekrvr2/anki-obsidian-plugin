@@ -127,33 +127,44 @@ def get_notes_details(note_ids):
 def update_tag_file(tag_name, note_link):
     """
     Crée ou met à jour la note de tag (ex : Histoire.md) en y ajoutant le lien vers la note.
-    Si la note existe déjà, le lien n'est pas dupliqué.
+    En plus, cette fonction s'assure que le fichier se termine par le hashtag correspondant (en minuscules),
+    par exemple "#histoire" pour le tag "Histoire".
     """
-    # On utilise "Sans tag" pour les notes sans tag
+    # Pour une note sans tag, on utilise "Sans tag"
     tag_clean = tag_name if tag_name else "Sans tag"
     tag_filename = sanitize_filename(tag_clean)
     tag_filepath = os.path.join(output_dir, f"{tag_filename}.md")
-
     # Ajout du tag dans l'ensemble global (pour l'index)
     tag_notes_set.add(tag_filename)
 
-    # Lecture du contenu existant
-    existing_content = ""
+    # Définir la ligne de hashtag (en minuscules)
+    tag_hashtag = f"#{tag_clean.lower()}"
+
+    lines = []
     if os.path.exists(tag_filepath):
         with open(tag_filepath, "r", encoding="utf-8") as f:
-            existing_content = f.read()
-
-    # Prépare le lien (ex: - [[Matthew Wong]])
-    new_link_line = f"- [[{note_link}]]\n"
-    if new_link_line.strip() in existing_content:
-        return  # Le lien existe déjà
-
-    if not existing_content:
-        # Création du fichier avec un header
-        new_content = f"# {tag_clean}\n\nListe des notes liées:\n{new_link_line}"
+            lines = f.read().splitlines()
+        # Retirer d'éventuelles lignes blanches en fin de fichier
+        while lines and lines[-1].strip() == "":
+            lines.pop()
+        # Si la dernière ligne correspond déjà au hashtag, on la retire temporairement
+        if lines and lines[-1].strip() == tag_hashtag:
+            lines.pop()
     else:
-        new_content = existing_content.rstrip() + "\n" + new_link_line
+        # Création d'un fichier avec un header
+        lines = [f"# {tag_clean}", "", "Liste des notes liées:"]
 
+    # Préparer la ligne de lien pour la note (ex: "- [[Matthew Wong]]")
+    note_line = f"- [[{note_link}]]"
+    if note_line not in lines:
+        lines.append(note_line)
+
+    # Ajouter éventuellement une ligne vide avant le hashtag pour séparer les parties
+    lines.append("")
+    # Ajouter le hashtag à la fin
+    lines.append(tag_hashtag)
+
+    new_content = "\n".join(lines) + "\n"
     with open(tag_filepath, "w", encoding="utf-8") as f:
         f.write(new_content)
 
