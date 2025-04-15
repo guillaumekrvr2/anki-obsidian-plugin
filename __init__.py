@@ -273,11 +273,11 @@ def update_tag_file(tag_name, note_link, add_to_index=True):
         except Exception as e:
             print(f"Erreur lors de la lecture du fichier tag existant {tag_filepath}: {e}")
             # Que faire en cas d'erreur de lecture ? Revenir à la valeur par défaut?
-            lines = [f"# {tag_clean}", "", "Liste des notes liées:"] # Ou juste initialiser lines = [] ?
+            lines = ["", "Liste des notes liées:",""] # Ou juste initialiser lines = [] ?
 
     else:
         # SI LE FICHIER N'EXISTE PAS : Initialiser avec l'en-tête
-        lines = [f"# {tag_clean}", "", "Liste des notes liées:"]
+        lines = ["", "Liste des notes liées:",""]
 
     # Définir tag_hashtag ici pour qu'il soit disponible dans le 'if' ci-dessus
     tag_hashtag = f"#{tag_clean.lower()}"
@@ -290,7 +290,7 @@ def update_tag_file(tag_name, note_link, add_to_index=True):
         if lines and lines[-1].strip().lower() == "liste des notes liées:":
              lines.append(note_line)
         elif not lines: # Cas où le fichier était vide ou erreur de lecture
-             lines = [f"# {tag_clean}", "", "Liste des notes liées:", note_line]
+             lines = ["", "Liste des notes liées:", note_line]
         else: # Ajouter à la fin si l'en-tête n'est pas là
              lines.append(note_line)
 
@@ -303,7 +303,7 @@ def update_tag_file(tag_name, note_link, add_to_index=True):
              lines.append("")
          lines.append(tag_hashtag)
     elif not lines: # Si le fichier était vide
-         lines = [f"# {tag_clean}", "", "Liste des notes liées:", note_line, "", tag_hashtag]
+         lines = ["", "Liste des notes liées:", note_line, "", tag_hashtag]
 
 
     new_content = "\n".join(lines) + "\n"
@@ -343,24 +343,30 @@ def update_parent_tag_file(tag, child=None):
         with open(tag_filepath, "r", encoding="utf-8") as f:
             lines = f.read().splitlines()
     else:
-        lines = [f"# {tag}"]
+         lines = []
     
-    # Assurer qu'il existe une section "Tags liés:"
+     # S'assurer qu'il existe une section "Tags liés:"
+    # (on vérifie si on a déjà la ligne "Tags liés:" en ignorant la casse)
     if not any(line.strip().lower() == "tags liés:" for line in lines):
-        lines.append("")
         lines.append("Tags liés:")
-    
-    # Ajouter le lien vers l'enfant s'il n'est pas déjà présent
+
+    # Si un enfant est précisé, on l'ajoute sous forme de puce
     if child:
-        child_link = f"[[{sanitize_filename(child)}]]"
+        child_link = f"- [[{sanitize_filename(child)}]]"
         if not any(child_link in line for line in lines):
             lines.append(child_link)
-    
-    # Ajoute le hashtag (par exemple, "#tag") en bas s'il n'est pas déjà présent
-    if not any(line.strip() == f"#{tag.lower()}" for line in lines):
-        lines.append("")
-        lines.append(f"#{tag.lower()}")
-    
+
+    # On retire déjà l'éventuel séparateur et la ligne "Tag : ..."
+    # s'ils existent pour éviter les doublons
+    lines = [l for l in lines if not l.strip().startswith("---") 
+                             and not l.strip().startswith("Tag : #")]
+
+    # Ajouter le séparateur et la mention "Tag : #tag"
+    lines.append("")
+    lines.append("---")
+    lines.append(f"Tag : #{tag.lower()}")
+
+    # Écriture du fichier
     with open(tag_filepath, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
     tag_notes_set.add(tag_filename)
@@ -463,7 +469,6 @@ def update_index_file():
     index_lines = []
     # Partie 1 : Index des tags parents (top-level)
     if top_level_tag_set:
-        index_lines.append("# Anki")
         index_lines.append("")
         index_lines.append("## Top-level Tags")
         index_lines.append("")
