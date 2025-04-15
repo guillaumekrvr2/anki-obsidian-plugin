@@ -465,23 +465,7 @@ def update_parent_child_link(parent, child):
     tag_notes_set.add(parent_filename)
 
 def update_index_file():
-    print(f"[DEBUG] top_level_tag_set = {top_level_tag_set}")
     index_lines = []
-    # Partie 1 : Index des tags parents (top-level)
-    if top_level_tag_set:
-        index_lines.append("")
-        index_lines.append("## Top-level Tags")
-        index_lines.append("")
-        for tag in sorted(top_level_tag_set):
-            index_lines.append(f"- [[{tag}]]")
-    else:
-        index_lines.append("Aucun tag parent à indexer.")
-    
-    # Séparation entre les deux parties
-    index_lines.append("")
-    index_lines.append("")
-
-    # Partie 2 : Index complet des fiches de tag
     if tag_notes_set:
         index_lines.append("# 📘 Index complet des fiches de tag")
         index_lines.append("")
@@ -492,7 +476,6 @@ def update_index_file():
     else:
         index_lines.append("Aucune fiche de tag à indexer.")
     
-    # Écriture unique du contenu combiné dans le fichier INDEX_NOTE_PATH
     try:
         with open(INDEX_NOTE_PATH, "w", encoding="utf-8") as f:
             f.write("\n".join(index_lines))
