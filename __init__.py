@@ -246,70 +246,93 @@ def export_notes(notes):
 
 # Ajouter le paramètre add_to_index=True par défaut
 def update_tag_file(tag_name, note_link, add_to_index=True):
-    tag_name = tag_name or "Sans tag"   # Si tag_name est None, le remplacer par "Sans tag"
+    tag_name = tag_name or "Sans tag"
     tag_clean = tag_name
     tag_filename = sanitize_filename(tag_clean)
     tag_filepath = os.path.join(OUTPUT_DIR, f"{tag_filename}.md")
-
-    # Ajouter à l'ensemble pour l'index SEULEMENT si demandé
+    
+    # Ajout à l'ensemble d'index si demandé
     if add_to_index:
         tag_notes_set.add(tag_filename)
         if "::" not in tag_name:
             top_level_tag_set.add(tag_filename)
-
-    tag_hashtag = f"#{tag_clean.lower()}"
-
+    
+    # Générer la structure de base : on veut toujours commencer par "Liste des notes liées:" puis "Tags liés:" puis le séparateur
+    base_structure = [
+        "Liste des notes liées:",
+        "",  # ligne vide
+        "Tags liés:",
+        "",  # ligne vide
+        "---",
+        f"Tag : #{tag_clean.lower()}"
+    ]
+    
+    # Charger le contenu existant (pour éventuellement conserver les liens déjà ajoutés) :
     lines = []
     if os.path.exists(tag_filepath):
-        # SI LE FICHIER EXISTE : Lire son contenu
-        try: # Bonne pratique d'ajouter un try/except pour la lecture
+        try:
             with open(tag_filepath, "r", encoding="utf-8") as f:
-                lines = f.read().splitlines() # Charger les lignes existantes
-            # Optionnel: Nettoyer les lignes vides à la fin et le dernier hashtag si présent
-            while lines and lines[-1].strip() == "":
-                lines.pop()
-            if lines and lines[-1].strip() == tag_hashtag: # Utiliser tag_hashtag défini plus bas
-                lines.pop()
+                lines = f.read().splitlines()
         except Exception as e:
             print(f"Erreur lors de la lecture du fichier tag existant {tag_filepath}: {e}")
-            # Que faire en cas d'erreur de lecture ? Revenir à la valeur par défaut?
-            lines = ["", "Liste des notes liées:",""] # Ou juste initialiser lines = [] ?
-
+            lines = []
+    
+    # On récupère les liens de note déjà présents dans la section "Liste des notes liées:"
+    # et on les met en mémoire pour éviter les doublons.
+    note_links = []
+    in_note_section = False
+    for line in lines:
+        stripped = line.strip()
+        # On démarre la section si on trouve "Liste des notes liées:" (sans insensibilité à la casse)
+        if stripped.lower().startswith("liste des notes liées:"):
+            in_note_section = True
+            continue
+        # On quitte la section quand on arrive à "Tags liés:"
+        if in_note_section and stripped.lower().startswith("tags liés:"):
+            in_note_section = False
+        if in_note_section and stripped.startswith("- [["):
+            note_links.append(stripped)
+    
+    # Conserver éventuellement les anciens liens de note
+    if note_link:
+        new_note_line = f"- [[{note_link}]]"
+        if new_note_line not in note_links:
+            note_links.append(new_note_line)
+    
+    # On reconstruit la partie "Liste des notes liées:" à partir de note_links
+    section_notes = ["Liste des notes liées:"]
+    if note_links:
+        section_notes.extend(note_links)
     else:
-        # SI LE FICHIER N'EXISTE PAS : Initialiser avec l'en-tête
-        lines = ["", "Liste des notes liées:",""]
-
-    # Définir tag_hashtag ici pour qu'il soit disponible dans le 'if' ci-dessus
-    tag_hashtag = f"#{tag_clean.lower()}"
-
-    # ... (le reste de la fonction pour ajouter note_line, le hashtag final, et écrire le fichier) ...
-
-    note_line = f"- [[{note_link}]]"
-    if note_line not in lines:
-        # Ajouter la ligne de note *après* le titre et l'en-tête potentiel
-        if lines and lines[-1].strip().lower() == "liste des notes liées:":
-             lines.append(note_line)
-        elif not lines: # Cas où le fichier était vide ou erreur de lecture
-             lines = ["", "Liste des notes liées:", note_line]
-        else: # Ajouter à la fin si l'en-tête n'est pas là
-             lines.append(note_line)
-
-    # Assurer que le hashtag est à la fin et qu'il y a une ligne vide avant (sauf si vide)
-    if lines and lines[-1].strip() != tag_hashtag:
-         # Enlever le hashtag s'il est ailleurs
-         lines = [l for l in lines if l.strip() != tag_hashtag]
-         # Ajouter une ligne vide si nécessaire
-         if lines and lines[-1].strip() != "":
-             lines.append("")
-         lines.append(tag_hashtag)
-    elif not lines: # Si le fichier était vide
-         lines = ["", "Liste des notes liées:", note_line, "", tag_hashtag]
-
-
-    new_content = "\n".join(lines) + "\n"
+        # Laisser la section vide si aucun lien n'existe
+        section_notes.append("")
+    
+    # Pour les tags liés, on conserve ce qui existe déjà dans le fichier (s'il y en a)
+    tag_links = []
+    in_tag_section = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.lower().startswith("tags liés:"):
+            in_tag_section = True
+            continue
+        # On s'arrête à la ligne du séparateur
+        if in_tag_section and stripped.startswith("---"):
+            break
+        if in_tag_section and stripped.startswith("- [["):
+            tag_links.append(stripped)
+    # On ne modifie pas ici la section "Tags liés:" car pour les tags feuilles (enfants sans sous-tags) on n'ajoute rien de nouveau.
+    section_tags = ["Tags liés:"]
+    if tag_links:
+        section_tags.extend(tag_links)
+    else:
+        section_tags.append("")
+    
+    # Assemblage de la nouvelle structure
+    new_lines = section_notes + [""] + section_tags + ["", "---", f"Tag : #{tag_clean.lower()}"]
+    
     try:
         with open(tag_filepath, "w", encoding="utf-8") as f:
-            f.write(new_content)
+            f.write("\n".join(new_lines) + "\n")
     except Exception as e:
         print(f"Erreur lors de l'écriture du fichier tag {tag_filepath}: {e}")
 
@@ -333,42 +356,100 @@ def update_hierarchical_tag_files(tag_str, note_link):
 
 def update_parent_tag_file(tag, child=None):
     """
-    Met à jour la fiche d'un tag parent pour y ajouter, sous la section "Tags liés:",
-    un lien vers le tag enfant. Cette fiche ne reçoit pas le lien vers la note.
+    Met à jour la fiche d'un tag parent pour qu'elle ait la structure suivante :
+    
+    Liste des notes liées:
+    (liens vers les notes liées directement à ce tag)
+    
+    Tags liés:
+    - [[<child>]]   <-- sera ajouté si un enfant est fourni
+    
+    ---
+    Tag : #<tag>
     """
     tag_filename = sanitize_filename(tag)
     tag_filepath = os.path.join(OUTPUT_DIR, f"{tag_filename}.md")
+    
+    # Charger le contenu existant ou partir d'une structure vide
     lines = []
     if os.path.exists(tag_filepath):
         with open(tag_filepath, "r", encoding="utf-8") as f:
             lines = f.read().splitlines()
-    else:
-         lines = []
+    # On part d'une structure de base si vide ou si non conforme
+    if not lines or not any("Liste des notes liées:" in line for line in lines):
+        lines = [
+            "Liste des notes liées:",
+            "",
+            "Tags liés:",
+            "",
+            "---",
+            f"Tag : #{tag.lower()}"
+        ]
     
-     # S'assurer qu'il existe une section "Tags liés:"
-    # (on vérifie si on a déjà la ligne "Tags liés:" en ignorant la casse)
-    if not any(line.strip().lower() == "tags liés:" for line in lines):
-        lines.append("Tags liés:")
-
-    # Si un enfant est précisé, on l'ajoute sous forme de puce
-    if child:
+    # On va maintenant mettre à jour la partie "Tags liés:" pour y ajouter un lien vers le tag enfant
+    # Recherche la position de la ligne "Tags liés:"
+    pos = None
+    for i, line in enumerate(lines):
+        if line.strip().lower() == "tags liés:":
+            pos = i
+            break
+    if pos is not None and child:
         child_link = f"- [[{sanitize_filename(child)}]]"
-        if not any(child_link in line for line in lines):
-            lines.append(child_link)
-
-    # On retire déjà l'éventuel séparateur et la ligne "Tag : ..."
-    # s'ils existent pour éviter les doublons
-    lines = [l for l in lines if not l.strip().startswith("---") 
-                             and not l.strip().startswith("Tag : #")]
-
-    # Ajouter le séparateur et la mention "Tag : #tag"
-    lines.append("")
-    lines.append("---")
-    lines.append(f"Tag : #{tag.lower()}")
-
-    # Écriture du fichier
-    with open(tag_filepath, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
+        # On va vérifier si ce lien existe déjà dans la section qui suit "Tags liés:" jusqu'au séparateur
+        present = False
+        for line in lines[pos+1:]:
+            if line.strip().startswith("- [[") and sanitize_filename(child) in line:
+                present = True
+                break
+            if line.strip().startswith("---"):
+                break
+        if not present:
+            # Insérer le lien juste après la ligne "Tags liés:"
+            lines.insert(pos+1, child_link)
+    
+    # On reconstruit l'ensemble pour s'assurer que la structure est conforme :
+    # On va extraire les sections existantes, puis réassembler
+    # Section 1 : Liste des notes liées (tout ce qui est avant la ligne "Tags liés:")
+    section_notes = []
+    section_tags = []
+    separator = None
+    final_line = None
+    mode = 1
+    for line in lines:
+        if mode == 1:
+            if line.strip().lower() == "tags liés:":
+                mode = 2
+                continue
+            section_notes.append(line)
+        elif mode == 2:
+            if line.strip().startswith("---"):
+                separator = line
+                mode = 3
+                continue
+            section_tags.append(line)
+        elif mode == 3:
+            final_line = line  # On suppose qu'il y a une seule ligne finale
+            break
+    
+    # On reconstruit la structure de base
+    new_lines = []
+    new_lines.extend(section_notes)
+    # S'assurer que la section "Liste des notes liées:" est présente
+    if not any(l.strip().lower() == "liste des notes liées:" for l in section_notes):
+        new_lines.insert(0, "Liste des notes liées:")
+    new_lines.append("")
+    new_lines.append("Tags liés:")
+    new_lines.append("")
+    new_lines.extend(section_tags)
+    new_lines.append("")
+    new_lines.append("---")
+    new_lines.append(f"Tag : #{tag.lower()}")
+    
+    try:
+        with open(tag_filepath, "w", encoding="utf-8") as f:
+            f.write("\n".join(new_lines) + "\n")
+    except Exception as e:
+        print(f"Erreur lors de l'écriture du fichier tag {tag_filepath}: {e}")
     tag_notes_set.add(tag_filename)
 
 def update_tag_file_bottom(tag):
